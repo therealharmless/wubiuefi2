@@ -24,7 +24,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            wine64 wine32 \
+            wine64 \
+            libwine \
+            wine \
             winetricks \
             python3 python3-pip \
             make \
@@ -62,7 +64,6 @@ jobs:
           mkdir -p build wine/drive_c/Python27
           cp -r /home/runner/.wine/drive_c/Python27/* wine/drive_c/Python27/
 
-          # Create pywine wrapper using printf to avoid heredoc issues
           printf '#!/bin/bash\nexport WINEPREFIX=/home/runner/.wine\nexport WINEARCH=win32\nexport WINEDLLOVERRIDES="mscoree,mshtml="\nexec wine "$@"\n' > tools/pywine
           chmod +x tools/pywine
 
