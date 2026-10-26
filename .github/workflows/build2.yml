@@ -20,7 +20,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Enable multiarch and install Wine
+      - name: Enable multiarch and install Wine + MinGW
         run: |
           sudo dpkg --add-architecture i386
           sudo apt-get update
@@ -28,6 +28,7 @@ jobs:
             wine64 \
             wine32:i386 \
             winetricks \
+            mingw-w64 \
             python3 python3-pip \
             make \
             grub2-common grub-pc-bin \
