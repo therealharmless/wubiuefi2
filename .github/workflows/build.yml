@@ -1,0 +1,503 @@
+name: Build WubiUEFI
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'WubiUEFI version tag/branch to build'
+        required: false
+        default: 'master'
+
+jobs:
+  build:
+    name: Build wubi.exe
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout WubiUEFI repository
+        uses: actions/checkout@v4
+        with:
+          repository: hakuna-m/wubiuefi
+          ref: ${{ github.event.inputs.version }}
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            wine64 wine32 \
+            winetricks \
+            python3 python3-pip \
+            make \
+            grub2-common grub-pc-bin \
+            p7zip-full \
+            curl \
+            gnupg2 \
+            software-properties-common \
+            xvfb
+
+      - name: Configure Wine
+        run: |
+          export WINEPREFIX=/home/runner/.wine
+          export WINEARCH=win32
+          export WINEDLLOVERRIDES="mscoree,mshtml="
+          wineboot --init
+          # Wait for wine to initialize
+          sleep 10
+
+      - name: Install Windows Python 2.7 in Wine
+        run: |
+          export WINEPREFIX=/home/runner/.wine
+          export WINEARCH=win32
+
+          # Download Python 2.7.18 (last 2.7 release)
+          cd /tmp
+          curl -L -o python-2.7.18.msi "https://www.python.org/ftp/python/2.7.18/python-2.7.18.msi"
+
+          # Install Python silently
+          wine msiexec /i python-2.7.18.msi /qn TARGETDIR=C:\\Python27 ALLUSERS=1
+
+          # Wait for installation
+          sleep 30
+
+          # Verify Python installation
+          wine "C:\\Python27\\python.exe" --version
+
+      - name: Install pywin32 in Wine Python
+        run: |
+          export WINEPREFIX=/home/runner/.wine
+          export WINEARCH=win32
+
+          # Install pywin32 for Python 2.7
+          wine "C:\\Python27\\python.exe" -m pip install pywin32==224
+
+          # Install required packages
+          wine "C:\\Python27\\python.exe" -m pip install pefile
+
+      - name: Setup build environment
+        run: |
+          # Create symlinks for the build system
+          mkdir -p build
+          mkdir -p wine/drive_c/Python27
+
+          # Copy Wine Python to where build expects it
+          cp -r /home/runner/.wine/drive_c/Python27/* wine/drive_c/Python27/
+
+          # Create pywine wrapper script
+          cat > tools/pywine << 'EOF'
+#!/bin/bash
+export WINEPREFIX=/home/runner/.wine
+export WINEARCH=win32
+export WINEDLLOVERRIDES="mscoree,mshtml="
+exec wine "$@"
+EOF
+          chmod +x tools/pywine
+
+          # Create check_wine script
+          cat > tools/check_wine << 'EOF'
+#!/bin/bash
+export WINEPREFIX=/home/runner/.wine
+export WINEARCH=win32
+wine --version
+EOF
+          chmod +x tools/check_wine
+
+          # Create check_winboot script
+          cat > tools/check_winboot << 'EOF'
+#!/bin/bash
+which grub-mkimage || exit 1
+which grub-ntldr-img || exit 1
+EOF
+          chmod +x tools/check_winboot
+
+      - name: Apply fixed isolist.ini
+        run: |
+          # Download the fixed isolist.ini from the user's provided content
+          cat > data/isolist.ini << 'ISOLIST_EOF'
+[DEFAULT]
+version=22.04
+info_file=.disk/info
+kernel=casper/vmlinuz
+initrd=casper/initrd
+files_to_check=casper/filesystem.squashfs
+md5sums=md5sum.txt
+metalink_md5sums=SHA256SUMS
+metalink_md5sums_signature=SHA256SUMS.gpg
+size=0
+min_iso_size=900000000
+max_iso_size=5000000000
+min_disk_space_mb=6000
+min_memory_mb=1024
+support=http://www.ubuntu.com/support
+installation_dir=ubuntu
+#NOTE: installation_dir must also be changed in data/wubildr.cfg
+
+[Ubuntu-i386]
+max_iso_size=3700000000
+arch=i386
+name=Ubuntu
+packages=ubuntu-desktop
+metalink=https://old-releases.ubuntu.com/releases/jammy/ubuntu-22.04.4-desktop-i386.list
+metalink2=https://old-releases.ubuntu.com/releases/jammy/ubuntu-22.04.4-desktop-i386.list
+website=http://www.ubuntu.com
+ordering=1
+
+[Ubuntu-amd64]
+max_iso_size=3700000000
+arch=amd64
+name=Ubuntu
+packages=ubuntu-desktop
+metalink=https://old-releases.ubuntu.com/releases/jammy/ubuntu-22.04.4-desktop-amd64.list
+metalink2=https://old-releases.ubuntu.com/releases/jammy/ubuntu-22.04.4-desktop-amd64.list
+website=http://www.ubuntu.com
+ordering=1
+
+[Kubuntu-i386]
+max_iso_size=3700000000
+arch=i386
+name=Kubuntu
+packages=kubuntu-desktop
+metalink=https://cdimage.ubuntu.com/kubuntu/releases/22.04/release/kubuntu-22.04.5-desktop-i386.list
+metalink2=https://cdimage.ubuntu.com/kubuntu/releases/22.04/release/kubuntu-22.04.5-desktop-i386.list
+website=http://www.kubuntu.org
+ordering=3
+
+[Kubuntu-amd64]
+max_iso_size=3700000000
+arch=amd64
+name=Kubuntu
+packages=kubuntu-desktop
+metalink=https://cdimage.ubuntu.com/kubuntu/releases/22.04/release/kubuntu-22.04.5-desktop-amd64.list
+metalink2=https://cdimage.ubuntu.com/kubuntu/releases/22.04/release/kubuntu-22.04.5-desktop-amd64.list
+website=http://www.kubuntu.org
+ordering=3
+
+[Xubuntu-i386]
+max_iso_size=2700000000
+arch=i386
+name=Xubuntu
+packages=xubuntu-desktop
+metalink=https://cdimage.ubuntu.com/xubuntu/releases/22.04/release/xubuntu-22.04.5-desktop-i386.list
+metalink2=https://cdimage.ubuntu.com/xubuntu/releases/22.04/release/xubuntu-22.04.5-desktop-i386.list
+website=http://www.xubuntu.org
+ordering=4
+
+[Xubuntu-amd64]
+max_iso_size=2700000000
+arch=amd64
+name=Xubuntu
+packages=xubuntu-desktop
+metalink=https://cdimage.ubuntu.com/xubuntu/releases/22.04/release/xubuntu-22.04.5-desktop-amd64.list
+metalink2=https://cdimage.ubuntu.com/xubuntu/releases/22.04/release/xubuntu-22.04.5-desktop-amd64.list
+website=http://www.xubuntu.org
+ordering=4
+
+[Ubuntu Budgie-i386]
+max_iso_size=2900000000
+arch=i386
+name=Ubuntu Budgie
+packages=budgie-desktop
+metalink=https://cdimage.ubuntu.com/ubuntu-budgie/releases/22.04/release/ubuntu-budgie-22.04.5-desktop-i386.list
+metalink2=https://cdimage.ubuntu.com/ubuntu-budgie/releases/22.04/release/ubuntu-budgie-22.04.5-desktop-i386.list
+website=http://ubuntubudgie.org
+ordering=5
+
+[Ubuntu Budgie-amd64]
+max_iso_size=2900000000
+arch=amd64
+name=Ubuntu Budgie
+packages=budgie-desktop
+metalink=https://cdimage.ubuntu.com/ubuntu-budgie/releases/22.04/release/ubuntu-budgie-22.04.5-desktop-amd64.list
+metalink2=https://cdimage.ubuntu.com/ubuntu-budgie/releases/22.04/release/ubuntu-budgie-22.04.5-desktop-amd64.list
+website=http://ubuntubudgie.org
+ordering=5
+
+[Lubuntu-i386]
+max_iso_size=2600000000
+arch=i386
+name=Lubuntu
+packages=lubuntu-desktop
+metalink=https://cdimage.ubuntu.com/lubuntu/releases/22.04/release/lubuntu-22.04.5-desktop-i386.list
+metalink2=https://cdimage.ubuntu.com/lubuntu/releases/22.04/release/lubuntu-22.04.5-desktop-i386.list
+website=http://lubuntu.net
+ordering=7
+
+[Lubuntu-amd64]
+max_iso_size=2600000000
+arch=amd64
+name=Lubuntu
+packages=lubuntu-desktop
+metalink=https://cdimage.ubuntu.com/lubuntu/releases/22.04/release/lubuntu-22.04.5-desktop-amd64.list
+metalink2=https://cdimage.ubuntu.com/lubuntu/releases/22.04/release/lubuntu-22.04.5-desktop-amd64.list
+website=http://lubuntu.net
+ordering=7
+
+[Ubuntu Studio-i386]
+max_iso_size=4500000000
+arch=i386
+name=Ubuntu Studio
+packages=ubuntustudio-desktop
+metalink=https://cdimage.ubuntu.com/ubuntustudio/releases/22.04/release/ubuntustudio-22.04.5-dvd-i386.list
+metalink2=https://cdimage.ubuntu.com/ubuntustudio/releases/22.04/release/ubuntustudio-22.04.5-dvd-i386.list
+website=http://ubuntustudio.org
+ordering=8
+
+[Ubuntu Studio-amd64]
+max_iso_size=4500000000
+arch=amd64
+name=Ubuntu Studio
+packages=ubuntustudio-desktop
+metalink=https://cdimage.ubuntu.com/ubuntustudio/releases/22.04/release/ubuntustudio-22.04.5-dvd-amd64.list
+metalink2=https://cdimage.ubuntu.com/ubuntustudio/releases/22.04/release/ubuntustudio-22.04.5-dvd-amd64.list
+website=http://ubuntustudio.org
+ordering=8
+
+[Ubuntu MATE-i386]
+max_iso_size=2900000000
+arch=i386
+name=Ubuntu MATE
+packages=ubuntu-mate-desktop
+metalink=https://cdimage.ubuntu.com/ubuntu-mate/releases/22.04/release/ubuntu-mate-22.04.5-desktop-i386.list
+metalink2=https://cdimage.ubuntu.com/ubuntu-mate/releases/22.04/release/ubuntu-mate-22.04.5-desktop-i386.list
+website=http://ubuntu-mate.org/
+ordering=9
+
+[Ubuntu MATE-amd64]
+max_iso_size=2900000000
+arch=amd64
+name=Ubuntu MATE
+packages=ubuntu-mate-desktop
+metalink=https://cdimage.ubuntu.com/ubuntu-mate/releases/22.04/release/ubuntu-mate-22.04.5-desktop-amd64.list
+metalink2=https://cdimage.ubuntu.com/ubuntu-mate/releases/22.04/release/ubuntu-mate-22.04.5-desktop-amd64.list
+website=http://ubuntu-mate.org
+ordering=9
+
+[Ubuntu Kylin-i386]
+max_iso_size=5000000000
+arch=i386
+name=Ubuntu Kylin
+packages=ubuntukylin-desktop
+metalink=https://cdimage.ubuntu.com/ubuntukylin/releases/22.04/release/ubuntukylin-22.04.5-desktop-i386.list
+metalink2=https://cdimage.ubuntu.com/ubuntukylin/releases/22.04/release/ubuntukylin-22.04.5-desktop-i386.list
+website=http://www.ubuntukylin.com
+ordering=A
+
+[Ubuntu Kylin-amd64]
+max_iso_size=5000000000
+arch=amd64
+name=Ubuntu Kylin
+packages=ubuntukylin-desktop
+metalink=https://cdimage.ubuntu.com/ubuntukylin/releases/22.04/release/ubuntukylin-22.04.5-desktop-amd64.list
+metalink2=https://cdimage.ubuntu.com/ubuntukylin/releases/22.04/release/ubuntukylin-22.04.5-desktop-amd64.list
+website=http://www.ubuntukylin.com
+ordering=A
+
+[Wubi-i386]
+version=
+arch=i386
+name=Wubi
+packages=
+metalink=22.04.4-desktop-i386.list
+metalink2=jammy-desktop-i386.list
+website=https://github.com/hakuna-m/wubiuefi
+support=https://github.com/hakuna-m/wubiuefi/wiki
+ordering=U
+
+[Wubi-amd64]
+version=
+arch=amd64
+name=Wubi
+packages=
+metalink=22.04.4-desktop-amd64.list
+metalink2=jammy-desktop-amd64.list
+website=https://github.com/hakuna-m/wubiuefi
+support=https://github.com/hakuna-m/wubiuefi/wiki
+ordering=U
+
+[Wubi lz-i386]
+version=
+arch=i386
+name=Wubi lz
+packages=
+initrd=casper/initrd.lz
+metalink=22.04.4-desktop-i386.list
+metalink2=jammy-desktop-i386.list
+website=https://github.com/hakuna-m/wubiuefi
+support=https://github.com/hakuna-m/wubiuefi/wiki
+ordering=V
+
+[Wubi lz-amd64]
+version=
+arch=amd64
+name=Wubi lz
+packages=
+initrd=casper/initrd.lz
+metalink=22.04.4-desktop-amd64.list
+metalink2=jammy-desktop-amd64.list
+website=https://github.com/hakuna-m/wubiuefi
+support=https://github.com/hakuna-m/wubiuefi/wiki
+ordering=V
+
+[Wubi EFI-i386]
+version=
+arch=i386
+name=Wubi EFI
+packages=
+kernel=casper/vmlinuz.efi
+initrd=casper/initrd.lz
+metalink=22.04.4-desktop-i386.list
+metalink2=jammy-desktop-amd64.list
+website=https://github.com/hakuna-m/wubiuefi
+support=https://github.com/hakuna-m/wubiuefi/wiki
+ordering=W
+
+[Wubi EFI-amd64]
+version=
+arch=amd64
+name=Wubi EFI
+packages=
+kernel=casper/vmlinuz.efi
+initrd=casper/initrd.lz
+metalink=22.04.4-desktop-amd64.list
+metalink2=jammy-desktop-amd64.list
+website=https://github.com/hakuna-m/wubiuefi
+support=https://github.com/hakuna-m/wubiuefi/wiki
+ordering=W
+
+[Wubi MD5-i386]
+version=
+arch=i386
+name=Wubi MD5
+packages=
+initrd=casper/initrd.lz
+md5sums=MD5SUMS
+metalink=22.04.4-desktop-i386.list
+metalink2=jammy-desktop-i386.list
+website=https://github.com/hakuna-m/wubiuefi
+support=https://github.com/hakuna-m/wubiuefi/wiki
+ordering=X
+
+[Wubi MD5-amd64]
+version=
+arch=amd64
+name=Wubi MD5
+packages=
+initrd=casper/initrd.lz
+md5sums=MD5SUMS
+metalink=22.04.4-desktop-amd64.list
+metalink2=jammy-desktop-amd64.list
+website=https://github.com/hakuna-m/wubiuefi
+support=https://github.com/hakuna-m/wubiuefi/wiki
+ordering=X
+
+[Wubi gz-i386]
+version=
+arch=i386
+name=Wubi gz
+packages=
+initrd=casper/initrd.gz
+metalink=22.04.4-desktop-i386.list
+metalink2=jammy-desktop-amd64.list
+website=https://github.com/hakuna-m/wubiuefi
+support=https://github.com/hakuna-m/wubiuefi/wiki
+ordering=Y
+
+[Wubi gz-amd64]
+version=
+arch=amd64
+name=Wubi gz
+packages=
+initrd=casper/initrd.gz
+metalink=22.04.4-desktop-amd64.list
+metalink2=jammy-desktop-amd64.list
+website=https://github.com/hakuna-m/wubiuefi
+support=https://github.com/hakuna-m/wubiuefi/wiki
+ordering=Y
+
+[Wubi SHA256-i386]
+version=
+arch=i386
+name=Wubi SHA256
+packages=
+initrd=casper/initrd.lz
+md5sums=SHA256SUMS
+metalink=22.04.4-desktop-i386.list
+metalink2=jammy-desktop-amd64.list
+website=https://github.com/hakuna-m/wubiuefi
+support=https://github.com/hakuna-m/wubiuefi/wiki
+ordering=Z
+
+[Wubi SHA256-amd64]
+version=
+arch=amd64
+name=Wubi SHA256
+packages=
+initrd=casper/initrd.lz
+md5sums=SHA256SUMS
+metalink=22.04.4-desktop-amd64.list
+metalink2=jammy-desktop-amd64.list
+website=https://github.com/hakuna-m/wubiuefi
+support=https://github.com/hakuna-m/wubiuefi/wiki
+ordering=Z
+
+[Wubi lz4-i386]
+version=
+arch=i386
+name=Wubi lz4
+packages=
+initrd=casper/initrd.lz4
+metalink=22.04.4-desktop-i386.list
+metalink2=jammy-desktop-amd64.list
+website=https://github.com/hakuna-m/wubiuefi
+support=https://github.com/hakuna-m/wubiuefi/wiki
+ordering=a
+
+[Wubi lz4-amd64]
+version=
+arch=amd64
+name=Wubi lz4
+packages=
+initrd=casper/initrd.lz4
+metalink=22.04.4-desktop-amd64.list
+metalink2=jammy-desktop-amd64.list
+website=https://github.com/hakuna-m/wubiuefi
+support=https://github.com/hakuna-m/wubiuefi/wiki
+ordering=a
+ISOLIST_EOF
+
+      - name: Build wubi.exe
+        run: |
+          export WINEPREFIX=/home/runner/.wine
+          export WINEARCH=win32
+          export WINEDLLOVERRIDES="mscoree,mshtml="
+
+          # Run the build
+          make wubi 2>&1 | tee build.log
+
+          # Check if build succeeded
+          if [ -f build/wubi.exe ]; then
+            echo "Build successful!"
+            ls -la build/wubi.exe
+          else
+            echo "Build failed. Checking build log..."
+            tail -50 build.log
+            exit 1
+          fi
+
+      - name: Verify executable
+        run: |
+          if [ -f build/wubi.exe ]; then
+            file build/wubi.exe
+            # Quick test - run with --help or --version if supported
+            export WINEPREFIX=/home/runner/.wine
+            export WINEARCH=win32
+            timeout 10 wine build/wubi.exe --help 2>&1 || true
+          fi
+
+      - name: Upload wubi.exe as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wubi-exe
+          path: build/wubi.exe
+          retention-days: 7
